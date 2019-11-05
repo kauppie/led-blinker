@@ -1,15 +1,18 @@
-#include <math.h> // for pow, sin, cos
+#include <math.h> // for sin, cos
+// #include <stdint.h>
 
 #define SCREEN_SIZE 16
 #define DIGIT_ROWS 5
 #define DIGIT_COLUMNS 3
 #define PI 3.14159265358979323846 // from math.h?
+#define MAX(X, Y) (((X) > (Y)) ? (X) : (Y))
 
 const uint16_t digits[10] = {31599, 25746, 29671, 29391, 23497, 31183, 31215, 29257, 31727, 31695};
 uint16_t screen[SCREEN_SIZE];
+uint16_t minutes = 12*60 + 34, seconds = 56;
 
 // Find the first digit of n
-int firstDigit(int n) 
+uint8_t firstDigit(uint8_t n) 
 { 
     while (n >= 10)  
         n /= 10; 
@@ -17,131 +20,102 @@ int firstDigit(int n)
 }
 
 // Find the last digit of n
-int lastDigit(int n) 
+uint8_t lastDigit(uint8_t n) 
 { 
     return (n % 10); 
-}
-
-void clearScreen()
-{
-    for(int i=0;i<SCREEN_SIZE;i++)
-    {
-        screen[i] = 0;
-    }
 }
 
 // Bresenham's line algorithm
 void drawLine(float x1, float y1, float x2, float y2)
 {
-  const bool steep = (fabs(y2 - y1) > fabs(x2 - x1));
-  float temp;
-  if(steep)
-  {
-    temp = x1;
-    x1 = y1;
-    y1 = temp;
-
-    temp = x2;
-    x2 = y2;
-    y2 = temp;
-  }
- 
-  if(x1 > x2)
-  {
-    temp = x1;
-    x1 = x2;
-    x2 = temp;
-
-    temp = y1;
-    y1 = y2;
-    y2 = temp;
-  }
- 
-  const float dx = x2 - x1;
-  const float dy = fabs(y2 - y1);
- 
-  float error = dx / 2.0f;
-  const int ystep = (y1 < y2) ? 1 : -1;
-  int y = (int)y1;
- 
-  const int maxX = (int)x2;
- 
-  for(int x=(int)x1; x<maxX; x++)
-  {
+    const bool steep = (fabs(y2 - y1) > fabs(x2 - x1));
+    float temp;
     if(steep)
     {
-        screen[x] |= (1 << (SCREEN_SIZE - y));
-    }
-    else
-    {
-        screen[y] |= (1 << (SCREEN_SIZE - x));
-    }
-    error -= dy;
-    if(error < 0)
-    {
-        y += ystep;
-        error += dx;
-    }
-  }
-}
+        temp = x1;
+        x1 = y1;
+        y1 = temp;
 
-void displayDigitalClockOnScreen(int time)
-{
-    time %= 60 * 60 * 24;
-    int seconds, hours, minutes;
-    minutes = time / 60;
-    seconds = time % 60;
-    hours = minutes / 60;
-    minutes = minutes % 60;
+        temp = x2;
+        x2 = y2;
+        y2 = temp;
+    }
+    if(x1 > x2)
+    {
+        temp = x1;
+        x1 = x2;
+        x2 = temp;
 
-    // Display hours and minutes
-    for(int row=0;row<DIGIT_ROWS;row++)
-    {
-        screen[row+2] = ((digits[firstDigit(hours)] >> ((DIGIT_ROWS - 1 - row) * DIGIT_COLUMNS)) & 7) << 9; // First digit of hours
-        screen[row+2] |= ((digits[lastDigit(hours)] >> ((DIGIT_ROWS - 1 - row) * DIGIT_COLUMNS)) & 7) << 4; // Second digit of hours
-        screen[row+9] = ((digits[firstDigit(minutes)] >> ((DIGIT_ROWS - 1 - row) * DIGIT_COLUMNS)) & 7) << 9; // First digit of minutes
-        screen[row+9] |= ((digits[lastDigit(minutes)] >> ((DIGIT_ROWS - 1 - row) * DIGIT_COLUMNS)) & 7) << 4; // Second digit of minutes
+        temp = y1;
+        y1 = y2;
+        y2 = temp;
     }
-    
-    // Display seconds as a ring around the screen
-    if(seconds<16)
+
+    const float dx = x2 - x1;
+    const float dy = fabs(y2 - y1);
+
+    float error = dx / 2.0f;
+    const uint8_t ystep = (y1 < y2) ? 1 : -1;
+    uint8_t y = (uint8_t)y1;
+
+    const uint8_t maxX = (uint8_t)x2;
+
+    for(uint8_t x=(uint8_t)x1; x<maxX; x++)
     {
-        for(int i=SCREEN_SIZE;i>SCREEN_SIZE-seconds;i--)
-            screen[0] += pow(2, i - 1);
-    }
-    else
-    {
-        screen[0] = 65535;
-        if(seconds<31)
+        if(steep)
         {
-            for(int row=1;row<=seconds-16;row++)
-                screen[row] |= 1;
+            screen[x] |= (1 << (SCREEN_SIZE - y));
         }
         else
         {
-            for(int row=1;row<SCREEN_SIZE-1;row++)
-                screen[row] |= 1;
-            if(seconds<47)
-            {
-                for(int i=0;i<=seconds-31;i++)
-                    screen[SCREEN_SIZE - 1] += pow(2, i);
-            }
-            else
-            {
-                screen[SCREEN_SIZE - 1] = 65535;
-                for(int row=14;row>60-seconds;row--)
-                    screen[row] |= 32768;
-            }   
+            screen[y] |= (1 << (SCREEN_SIZE - x));
+        }
+        error -= dy;
+        if(error < 0)
+        {
+            y += ystep;
+            error += dx;
         }
     }
 }
 
-void displayAnalogClockOnScreen(int time)
+void displayDigitalClockOnScreen()
 {
-    time %= 60 * 60 * 24;
-    int seconds, hours, minutes;
-    minutes = time / 60;
-    seconds = time % 60;
+    uint16_t hours;
+    hours = minutes / 60;
+    minutes = minutes % 60;
+    
+    // Display seconds as a ring around the screen
+    for(uint8_t row=0;row<SCREEN_SIZE;row++)
+    {
+        if(row == 0)
+        {
+            screen[row] = ~((1 << MAX(16 - seconds, 0)) - 1);
+        }
+        else if(row == 15)
+        {
+            screen[row] = (1 << MAX(seconds - 30, 0)) - 1;
+        }
+        else
+        {
+            screen[row] = (row < seconds - 15 ? 1 : 0);
+            screen[row] |= (row > 60 - seconds ? 1 << 15 : 0);
+        }
+    }
+
+    //Display hours and minutes
+    for(uint8_t row=0;row<DIGIT_ROWS;row++)
+    {
+        screen[row+2] |= ((digits[firstDigit(hours)] >> ((DIGIT_ROWS - 1 - row) * DIGIT_COLUMNS)) & 7) << 9; // First digit of hours
+        screen[row+2] |= ((digits[lastDigit(hours)] >> ((DIGIT_ROWS - 1 - row) * DIGIT_COLUMNS)) & 7) << 4; // Second digit of hours
+        screen[row+9] |= ((digits[firstDigit(minutes)] >> ((DIGIT_ROWS - 1 - row) * DIGIT_COLUMNS)) & 7) << 9; // First digit of minutes
+        screen[row+9] |= ((digits[lastDigit(minutes)] >> ((DIGIT_ROWS - 1 - row) * DIGIT_COLUMNS)) & 7) << 4; // Second digit of minutes
+    }
+}
+
+void displayAnalogClockOnScreen()
+{
+    uint16_t hours;
     hours = minutes / 60;
     minutes = minutes % 60;
     
@@ -170,15 +144,12 @@ void displayAnalogClockOnScreen(int time)
 }
 
 // Example usage:
+// #include <bitset>
 // #include <iostream>
-// int main(void)
+// uint8_t main(void)
 // {
-//     clearScreen();
-//     displayDigitalClockOnScreen(11 * 60*60 + 11 * 60 + 11);
-//     displayAnalogClockOnScreen(6 * 60*60 + 15 * 60 + 39);
-//     for(int i=0;i<SCREEN_SIZE;i++)
-//     {
-//         std::cout << screen[i] << std::endl;
-//     }
+//     displayAnalogClockOnScreen();
+//     for(uint8_t i=0;i<SCREEN_SIZE;i++)
+//         std::cout << std::bitset<16>(screen[i]).to_string() << std::endl;
 //     return 0;
 // }
