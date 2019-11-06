@@ -13,10 +13,8 @@ uint16_t minutes = 12*60 + 34, seconds = 56;
 
 // Find the first digit of n
 uint8_t firstDigit(uint8_t n) 
-{ 
-    while (n >= 10)  
-        n /= 10; 
-    return n; 
+{
+    return (n / 10);
 }
 
 // Find the last digit of n
