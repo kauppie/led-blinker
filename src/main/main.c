@@ -21,7 +21,7 @@
 
 // Timing constants.
 #define ROW_DELAY_US 1000
-#define LED_DUTY_CYCLE 100
+#define LED_DUTY_CYCLE_MAX 99
 // With 16-bit timer and 1/64 prescaler on F_CPU.
 #define USECS_PER_TIMER_OF 524288
 #define DEBOUNCE_TIME_MS 20
@@ -33,108 +33,115 @@
 
 // Time constants.
 #define TIME_ADDRESS 0x100
-#define TIME_WRITE_PERIOD_MS 30000
+#define TIME_WRITE_PERIOD_MS 30000UL
+#define MILLISECONDS_PER_DAY 86400000UL
 
 // Macro functions.
 #define MIN(X, Y) (X < Y ? X : Y)
 #define MAX(X, Y) (X < Y ? Y : X)
 
-// Flags.
+// State flags.
 #define BUTTON_STATE 0x01
-#define SLEEP_STATE 0x02
+#define IDLE_STATE 0x02
 #define USE_DIGITAL_DISPLAY_STATE 0x04
+#define SETTINGS_STATE 0x08
+#define SETTINGS_DIGITAL_STATE (SETTINGS_STATE | USE_DIGITAL_DISPLAY_STATE)
+#define SETTING_MINUTE_STATE 0x10
+#define SETTING_TENMINUTE_STATE 0x20
+#define SETTING_HOUR_STATE 0x40
+#define SETTING_TENHOUR_STATE 0x80
 
 // Global interrupt controlled volatiles.
 volatile uint_fast16_t usecs;
 volatile uint_fast32_t msecs;
+volatile uint_fast32_t lastTimeWrite;
 volatile uint8_t stateFlags;
 volatile uint8_t prevStateFlags;
 volatile uint8_t buttonPressTime;
-volatile uint_fast32_t lastTimeWrite;
+volatile uint8_t ledDutyCycle;
 
 // Digits used in digital clock scaled to 5x3 matrix as bits.
-const uint16_t digits[10] = {0x7B6F, 0x2492, 0x73E7, 0x73CF, 0x5BC9, 0x79CF, 0x79EF, 0x7249, 0x7BEF, 0x7BCF};
+const uint16_t digits[10] = {0x7B6F, 0x2492, 0x73E7, 0x73CF, 0x5BC9,
+							 0x79CF, 0x79EF, 0x7249, 0x7BEF, 0x7BCF};
 // Rendering target and display source.
 uint16_t screen[ROWS];
 
 // Function declarations.
 void setup();
-void powerDown();
+void settings_mode();
+void idleMode();
 void writeTimeToEEPROM();
 void readTimeFromEEPROM();
-static inline void debounce();
 inline void setState(uint8_t);
 inline void clearState(uint8_t);
 inline void toggleState(uint8_t);
 void updateButtonState();
+void delayMicros(uint16_t);
 void clearAll();
 void clearForDraw();
 void allOn();
 void setRow(uint8_t);
-void setColumn(uint16_t);
+void setColumns(uint16_t);
 void renderDigitalClockOnScreen();
+void renderDigitalTime(uint8_t);
 void renderAnalogClockOnScreen();
-void clearScreen();
+inline void clearScreen();
+void renderScreen();
+void displayScreen();
 
 
 int main()
 {
+	// Setup all globals and micro-controller flags.
 	setup();
 	
+	// Program loop.
 	while (1) {
-		
-		if (stateFlags & SLEEP_STATE)
-			powerDown();
-		
-		clearScreen();
-		
-		if (stateFlags & USE_DIGITAL_DISPLAY_STATE)
-			renderDigitalClockOnScreen();
-		else
-			renderAnalogClockOnScreen();
-		
-		// Display screen with preset brightness.
-		for (uint8_t i = 0; i < ROWS; ++i) {
-			clearForDraw();
-			_delay_us(ROW_DELAY_US / 100 * (100 - LED_DUTY_CYCLE));
-			setRow(i);
-			setColumn(screen[i]);
-			_delay_us(ROW_DELAY_US / 100 * LED_DUTY_CYCLE);
-		}
-		// Prevent the last row blasting at full brightness.
-		clearForDraw();
+		// If sleep state flag is set, go idling.
+		if (stateFlags & IDLE_STATE)
+			idleMode();
+		// Render screen on render target.
+		renderScreen();		
+		// Display rendered screen.
+		displayScreen();
 	}
 }
 
 // Timed interrupt which increments the clock and checks for
-// button press.
+// button press. Writes current time periodically to EEPROM.
 ISR(TIMER1_OVF_vect) {
 	usecs += 531;
 	msecs += 529 + usecs / 1000;
 	usecs %= 1000;
 	// Reset after 24 hours.
-	msecs %= 86400000;
+	msecs %= MILLISECONDS_PER_DAY;
 	
-	if (msecs > lastTimeWrite + TIME_WRITE_PERIOD_MS) {
+	// Write current time to EEPROM periodically.
+	if (msecs > lastTimeWrite + TIME_WRITE_PERIOD_MS
+		|| msecs < lastTimeWrite) {
 		lastTimeWrite = msecs;
 		writeTimeToEEPROM();
 	}
 	
 	updateButtonState();	
-	if (stateFlags & BUTTON_STATE) {
-		++buttonPressTime;
-	}
-	else buttonPressTime = 0;
-	
-	if (buttonPressTime == 1) {
+	// Increment press time.
+	++buttonPressTime;
+	// Reset if not pressed.
+	if (~stateFlags & BUTTON_STATE)
+		buttonPressTime = 0;
+
+	// Button press time to action.
+	if (buttonPressTime == 1)
 		toggleState(USE_DIGITAL_DISPLAY_STATE);
+	else if (buttonPressTime == 6)
+		setState(IDLE_STATE);
+	// Clock has entered idle so check that is so.
+	else if (stateFlags & IDLE_STATE && (buttonPressTime >= 10)) {
+		clearState(IDLE_STATE);
+		settings_mode();
 	}
-	else if (buttonPressTime == 6) {
-		setState(SLEEP_STATE);
-	}
-	else if (stateFlags & SLEEP_STATE && (buttonPressTime == 3)) {
-		clearState(SLEEP_STATE);
-	}
+	else if (stateFlags & IDLE_STATE && (buttonPressTime == 3))
+		clearState(IDLE_STATE);
 }
 
 void setup() {
@@ -149,6 +156,7 @@ void setup() {
 	DDRB |= 0x1F;
 	// Set LED pins LOW.
 	clearAll();
+	ledDutyCycle = LED_DUTY_CYCLE_MAX;
 	
 	// Reset globals and update button state.
 	usecs = 0;
@@ -174,9 +182,72 @@ void setup() {
 	sei();
 }
 
-void powerDown() {
+void settings_mode() {
+	// Disable interrupts for the whole process since time is set here
+	// therefore no updating is needed.
+	cli();	
+	setState(SETTINGS_STATE);
+	
+	uint_fast32_t timing_counter = 0, blink_time = 0,
+				  button_time = 0;
+	uint8_t time_flag = 0x01;
+	uint8_t blink_flag = 0x00;
+	// Used to ignore multiple triggers.
+	uint8_t setting_trigger_flag = 0x00;
+	
+	while (stateFlags & SETTINGS_STATE) {
+		if (timing_counter > blink_time + 25) {
+			blink_time = timing_counter;
+			blink_flag ^= 0xFF;
+		}	
+		
+		if (~stateFlags & prevStateFlags & BUTTON_STATE &&
+			~setting_trigger_flag & 0x01) {
+			// Reset seconds.
+			msecs -= msecs % 60000UL;
+			// One minute.
+			if (time_flag & 0x01)
+				msecs += 60000UL;
+			// One hour.
+			else if (time_flag & 0x04)
+				msecs += 3600000UL;
+			// Whole day -> reset to 0.
+			msecs %= MILLISECONDS_PER_DAY;
+			
+			setting_trigger_flag |= 0x01;
+		}
+		else if (timing_counter > button_time + 75UL && ~setting_trigger_flag & 0x02) {
+			time_flag ^= 0x05;
+			setting_trigger_flag |= 0x02;
+		}
+		else if (timing_counter > button_time + 300UL)
+			clearState(SETTINGS_STATE);
+		
+		updateButtonState();
+		
+		clearScreen();
+		renderDigitalTime(time_flag & blink_flag);
+		displayScreen();
+		_delay_ms(1);
+		
+		// Set button press start.
+		// Rendering and displaying process used as debouncing.
+		++timing_counter;
+		if (~stateFlags & prevStateFlags & BUTTON_STATE)
+			setting_trigger_flag = 0;
+		else if (~stateFlags & BUTTON_STATE)
+			button_time = timing_counter;
+	}
+	// Write time to EEPROM before continuing.
+	writeTimeToEEPROM();
+	
+	// Turn interrupts back on.
+	sei();
+}
+
+void idleMode() {
 	cli();
-	while (stateFlags & SLEEP_STATE) {
+	while (stateFlags & IDLE_STATE) {
 		sleep_enable();
 		sei();
 		sleep_cpu();
@@ -198,10 +269,6 @@ void writeTimeToEEPROM() {
 void readTimeFromEEPROM() {
 	eeprom_busy_wait();
 	msecs = eeprom_read_dword((uint32_t*)TIME_ADDRESS);
-}
-
-static inline void debounce() {
-	_delay_ms(DEBOUNCE_TIME_MS);
 }
 
 inline void setState(uint8_t flags) {
@@ -234,28 +301,54 @@ void updateButtonState() {
 	DDRD |= (1 << PD2);
 }
 
-void clearScreen() {
-	for (uint8_t i = 0; i < ROWS; ++i) {
+// Delays at least time specified. If interrupt occurs during waiting, time
+// waited is interrupt + delay loop. Isn't very accurate.
+void delayMicros(uint16_t us) {
+	_delay_loop_2(2 * us - 1);
+}
+
+inline void clearScreen() {
+	for (uint8_t i = 0; i < ROWS; ++i)
 		screen[i] = 0;
+}
+
+void renderScreen() {
+	// Reset render vector.
+	clearScreen();
+	
+	// Choose algorithm to render.
+	if (stateFlags & USE_DIGITAL_DISPLAY_STATE)
+		renderDigitalClockOnScreen();
+	else
+		renderAnalogClockOnScreen();
+}
+
+void displayScreen() {
+	// Display screen with preset brightness.
+	for (uint8_t i = 0; i < ROWS; ++i) {
+		clearForDraw();
+		delayMicros(ROW_DELAY_US / 100 * (100 - ledDutyCycle));
+		setRow(i);
+		setColumns(screen[i]);
+		delayMicros(ROW_DELAY_US / 100 * ledDutyCycle);
 	}
+	// Prevent the last row blasting at full brightness.
+	clearForDraw();
 }
 
 void renderDigitalClockOnScreen() {
-	// Must be 32-bit, otherwise overflows at 18:18.
-	uint32_t seconds = msecs / 1000;
-	uint16_t minutes = seconds / 60;
-	seconds %= 60;
-	uint16_t hours = minutes / 60;
-	minutes %= 60;
+	// Must be 32-bit, otherwise overflows at 18:12.
+	uint32_t seconds = msecs / 1000UL;
+	seconds %= 60UL;	
 	
 	// Second half of the top bar.
-	screen[0] |= ~((1 << (7 - seconds)) - 1) & 0x00FF;	
+	screen[0] |= ~((1 << (7 - seconds)) - 1) & 0x00FF;
 	// First half of the top bar.
 	if (seconds > 51)
-		screen[0] |= ~((1 << (67 - seconds)) - 1);
+	screen[0] |= ~((1 << (67 - seconds)) - 1);
 	// Bottom bar.
 	if (seconds > 21)
-		screen[ROWS - 1] |= (1 << (seconds - 21)) - 1;
+	screen[ROWS - 1] |= (1 << (seconds - 21)) - 1;
 	// Right edge.
 	if (seconds > 7) {
 		uint16_t right_bar = ~((1 << (23 - seconds)) - 1);
@@ -270,25 +363,40 @@ void renderDigitalClockOnScreen() {
 			screen[i] |= (left_bar << i) & 0x8000;
 		}
 	}
+	renderDigitalTime(0);
+}
 
+void renderDigitalTime(uint8_t hideFlag) {
+	uint16_t minutes = msecs / 60000UL;
+	uint16_t hours = minutes / 60;
+	minutes %= 60;
+	
 	// Display hours and minutes.
 	for (uint8_t row = 0; row < DIGIT_ROWS; ++row) {
-		// First digit of hours.
-		screen[row + 2] |= 
-			((digits[hours / 10] >> 
-			((DIGIT_ROWS - row - 1) * DIGIT_COLUMNS)) & 7) << 9;
-		// Second digit of hours.
-		screen[row + 2] |= 
-			((digits[hours % 10] >> 
-			((DIGIT_ROWS - row - 1) * DIGIT_COLUMNS)) & 7) << 4;
-		// First digit of minutes.
-		screen[row + 9] |= 
-			((digits[minutes / 10] >> 
-			((DIGIT_ROWS - row - 1) * DIGIT_COLUMNS)) & 7) << 9;
-		// Second digit of minutes.
-		screen[row + 9] |= 
-			((digits[minutes % 10] >> 
-			((DIGIT_ROWS - row - 1) * DIGIT_COLUMNS)) & 7) << 4;
+		if (~hideFlag & 0x08) {
+			// First digit of hours.
+			screen[row + 2] |=
+				((digits[hours / 10] >>
+				((DIGIT_ROWS - row - 1) * DIGIT_COLUMNS)) & 7) << 9;
+		}
+		if (~hideFlag & 0x04) {
+			// Second digit of hours.
+			screen[row + 2] |=
+				((digits[hours % 10] >>
+				((DIGIT_ROWS - row - 1) * DIGIT_COLUMNS)) & 7) << 4;
+		}
+		if (~hideFlag & 0x02) {
+			// First digit of minutes.
+			screen[row + 9] |=
+				((digits[minutes / 10] >>
+				((DIGIT_ROWS - row - 1) * DIGIT_COLUMNS)) & 7) << 9;
+		}
+		if (~hideFlag & 0x01) {
+			// Second digit of minutes.
+			screen[row + 9] |=
+				((digits[minutes % 10] >>
+				((DIGIT_ROWS - row - 1) * DIGIT_COLUMNS)) & 7) << 4;
+		}
 	}
 }
 
@@ -341,10 +449,10 @@ void drawLine(float x1, float y1, float x2, float y2)
 
 void renderAnalogClockOnScreen()
 {
-	// Must be 32-bit, otherwise overflows at 18:18.
-	uint32_t seconds = msecs / 1000;
-	uint16_t minutes = seconds / 60;
-	seconds %= 60;
+	// Must be 32-bit, otherwise overflows at 18:12.
+	uint32_t seconds = msecs / 1000UL;
+	uint16_t minutes = seconds / 60UL;
+	seconds %= 60UL;
 	uint16_t hours = minutes / 60;
 	minutes %= 60;
 	
@@ -413,32 +521,29 @@ void clearForDraw() {
 // Takes number between 0-15 to activate certain row. Numbers over 15 are make
 // undefined behavior.
 void setRow(uint8_t row) {
-	if (row < 5) {
+	if (row < 5)
 		PORTA |= (1 << (row + PA3));
-	}
-	else if (row < 8) {
+	else if (row < 8)
 		PORTE |= (1 << (row - PA5));
-	}
-	else {
+	else
 		PORTC |= (1 << (15 - row));
-	}
 }
 
-
-void setColumn(uint16_t col) {
-	for (int16_t i = 7; i >= 0; --i) {
-		if (col & (1 << (2 * i))) {
+// Takes 16-bit value where each bit is represents a column in order from left
+// to right. setRow is used to activate certain row where LEDs are 
+// to be activated.
+void setColumns(uint16_t cols) {
+	int8_t i;
+	for (i = 7; i >= 0; --i) {
+		if (cols & (1 << (2 * i)))
 			PORTD &= ~(1 << i);
-		}
 	}
-	for (int16_t i = 2; i >= 0; --i) {
-		if (col & (1 << (11 + 2*i))) {
+	for (i = 2; i >= 0; --i) {
+		if (cols & (1 << (11 + 2*i)))
 			PORTA &= ~(1 << i);
-		}
 	}
-	for (int16_t i = 0; i < 5; ++i) {
-		if (col & (1 << (9 - 2*i))) {
+	for (i = 0; i < 5; ++i) {
+		if (cols & (1 << (9 - 2*i)))
 			PORTB &= ~(1 << i);
-		}
 	}
 }
