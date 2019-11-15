@@ -12,7 +12,6 @@
 #include <avr/sleep.h>
 #include <avr/interrupt.h>
 #include <avr/eeprom.h>
-#include <time.h>
 
 #include <math.h>
 
@@ -46,10 +45,6 @@
 #define USE_DIGITAL_DISPLAY_STATE 0x04
 #define SETTINGS_STATE 0x08
 #define SETTINGS_DIGITAL_STATE (SETTINGS_STATE | USE_DIGITAL_DISPLAY_STATE)
-#define SETTING_MINUTE_STATE 0x10
-#define SETTING_TENMINUTE_STATE 0x20
-#define SETTING_HOUR_STATE 0x40
-#define SETTING_TENHOUR_STATE 0x80
 
 // Global interrupt controlled volatiles.
 volatile uint_fast16_t usecs;
@@ -90,20 +85,34 @@ void renderScreen();
 void displayScreen();
 
 
-int main()
-{
+int main() {
 	// Setup all globals and micro-controller flags.
 	setup();
+	
+	uint_fast32_t timing_counter = 0, button_time = 0;
 	
 	// Program loop.
 	while (1) {
 		// If sleep state flag is set, go idling.
 		if (stateFlags & IDLE_STATE)
 			idleMode();
-		// Render screen on render target.
-		renderScreen();		
-		// Display rendered screen.
+		
+		updateButtonState();
+		
+		renderScreen();
 		displayScreen();
+		_delay_ms(1);
+		
+		++timing_counter;
+		if (~stateFlags & BUTTON_STATE)
+			button_time = timing_counter;
+		
+		if (~stateFlags & prevStateFlags & BUTTON_STATE)
+			toggleState(USE_DIGITAL_DISPLAY_STATE);
+		else if (timing_counter == button_time + 30UL)
+			setState(IDLE_STATE);
+		else if (timing_counter == button_time + 60UL)
+			settings_mode();
 	}
 }
 
@@ -130,17 +139,7 @@ ISR(TIMER1_OVF_vect) {
 	if (~stateFlags & BUTTON_STATE)
 		buttonPressTime = 0;
 
-	// Button press time to action.
-	if (buttonPressTime == 1)
-		toggleState(USE_DIGITAL_DISPLAY_STATE);
-	else if (buttonPressTime == 6)
-		setState(IDLE_STATE);
-	// Clock has entered idle so check that is so.
-	else if (stateFlags & IDLE_STATE && (buttonPressTime >= 10)) {
-		clearState(IDLE_STATE);
-		settings_mode();
-	}
-	else if (stateFlags & IDLE_STATE && (buttonPressTime == 3))
+	if (stateFlags & IDLE_STATE && (buttonPressTime == 3))
 		clearState(IDLE_STATE);
 }
 
@@ -188,6 +187,10 @@ void settings_mode() {
 	cli();	
 	setState(SETTINGS_STATE);
 	
+	// Overflows approximately after 497 days.
+	// -> Hard reset required.
+	// Settings mode for 1 year and 132 days? Batteries don't last
+	// that long.
 	uint_fast32_t timing_counter = 0, blink_time = 0,
 				  button_time = 0;
 	uint8_t time_flag = 0x01;
@@ -196,7 +199,7 @@ void settings_mode() {
 	uint8_t setting_trigger_flag = 0x00;
 	
 	while (stateFlags & SETTINGS_STATE) {
-		if (timing_counter > blink_time + 25) {
+		if (timing_counter > blink_time + 25UL) {
 			blink_time = timing_counter;
 			blink_flag ^= 0xFF;
 		}	
@@ -216,11 +219,12 @@ void settings_mode() {
 			
 			setting_trigger_flag |= 0x01;
 		}
-		else if (timing_counter > button_time + 75UL && ~setting_trigger_flag & 0x02) {
+		else if (timing_counter > button_time + 75UL && 
+				 ~setting_trigger_flag & 0x02) {
 			time_flag ^= 0x05;
 			setting_trigger_flag |= 0x02;
 		}
-		else if (timing_counter > button_time + 300UL)
+		else if (timing_counter > button_time + 200UL)
 			clearState(SETTINGS_STATE);
 		
 		updateButtonState();
@@ -231,7 +235,6 @@ void settings_mode() {
 		_delay_ms(1);
 		
 		// Set button press start.
-		// Rendering and displaying process used as debouncing.
 		++timing_counter;
 		if (~stateFlags & prevStateFlags & BUTTON_STATE)
 			setting_trigger_flag = 0;
