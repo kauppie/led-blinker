@@ -1,9 +1,24 @@
-/*
-* ledikello.c
-*
-* Created: 30/10/2019 15.41.52
-* Author : Elias, Toivo
-*/
+// MIT License
+//
+// Copyright (c) 2019 Elias Kauppi, Toivo Snare
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy
+// of this software and associated documentation files (the "Software"), to deal
+// in the Software without restriction, including without limitation the rights
+// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+// copies of the Software, and to permit persons to whom the Software is
+// furnished to do so, subject to the following conditions:
+//
+// The above copyright notice and this permission notice shall be included in all
+// copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+// SOFTWARE.
 
 #define F_CPU 8000000
 
@@ -99,18 +114,28 @@ int main() {
 		
 		updateButtonState();
 		
+		// Render screen by predetermined bit state to use digital or analog
+		// variant of the clock screen.
 		renderScreen();
 		displayScreen();
 		_delay_ms(1);
 		
+		// Increment the timer and stop incrementing the button_time if the
+		// button is pressed.
 		++timing_counter;
 		if (~stateFlags & BUTTON_STATE)
 			button_time = timing_counter;
 		
+		// Toggle between digital and analog watch faces when 
+		// button is released.
 		if (~stateFlags & prevStateFlags & BUTTON_STATE)
 			toggleState(USE_DIGITAL_DISPLAY_STATE);
+		// If button is pressed for approximately 0.7 seconds,
+		// set state for idling.
 		else if (timing_counter == button_time + 30UL)
 			setState(IDLE_STATE);
+		// If button is pressed for approximately 1.5 seconds,
+		// go to settings mode and after exiting, continue main program loop.
 		else if (timing_counter == button_time + 60UL)
 			settings_mode();
 	}
@@ -162,9 +187,11 @@ void setup() {
 	readTimeFromEEPROM();
 	lastTimeWrite = msecs;
 	
+	// Preset digital display after start-up.
 	stateFlags = USE_DIGITAL_DISPLAY_STATE;
 	prevStateFlags = stateFlags;
 	
+	// Reset button press timer and update button current state.
 	buttonPressTime = 0;
 	updateButtonState();
 	
